@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TextIO
 
 import requests
 
@@ -28,6 +29,16 @@ def safe_parcel_image_dir(parcel_id: str) -> str:
     s = s.replace("/", "_").replace("\\", "_")
     s = re.sub(r"[^\w.\-]+", "_", s, flags=re.UNICODE)
     return s or "unknown_parcel"
+
+
+def _work_one_line_address(work: PendingParcelWork) -> str:
+    parts = [
+        (work.property_address or "").strip(),
+        (work.city or "").strip(),
+        (work.state or "").strip(),
+        (work.zip or "").strip(),
+    ]
+    return ", ".join(p for p in parts if p) or "(no address on row)"
 
 
 def verification_context(work: PendingParcelWork) -> str:
@@ -183,8 +194,15 @@ def run_pending_batch(
     streetview_cache: Path,
     openai_model: str = "gpt-4o-mini",
     stop_after_images: bool = False,
+    progress: bool = True,
+    progress_stream: TextIO | None = None,
 ) -> RunBatchStats:
-    """Process up to ``limit`` pending parcels; opens/closes API clients for the batch."""
+    """Process up to ``limit`` pending parcels; opens/closes API clients for the batch.
+
+    When ``progress`` is True, prints one line per parcel (before and after) to ``progress_stream``
+    (default stderr) so long runs show which parcel is active and the outcome.
+    """
+    log: TextIO = progress_stream if progress_stream is not None else sys.stderr
     stats = RunBatchStats()
     verifier: PropertyVerifier | None = None
     if not stop_after_images:
@@ -200,8 +218,21 @@ def run_pending_batch(
         with PipelineStore(db_path) as pstore:
             pstore.init_schema()
             batch = pstore.fetch_pending_with_addresses(limit)
-            for work in batch:
+            total = len(batch)
+            if progress:
+                print(
+                    f"[pipeline] {total} pending parcel(s) in this batch (limit was {limit}).",
+                    file=log,
+                    flush=True,
+                )
+            for idx, work in enumerate(batch, start=1):
                 stats.attempted += 1
+                if progress:
+                    print(
+                        f"[pipeline] [{idx}/{total}] START {work.parcel_id} — {_work_one_line_address(work)}",
+                        file=log,
+                        flush=True,
+                    )
                 try:
                     outcome = process_one_parcel(
                         pstore=pstore,
@@ -217,6 +248,13 @@ def run_pending_batch(
                     pstore.mark_failed(work.parcel_id.strip(), f"{type(e).__name__}: {e}"[:2000])
                     outcome = "failed"
                     stats.errors.append(f"{work.parcel_id}: {e!s}")
+
+                if progress:
+                    print(
+                        f"[pipeline] [{idx}/{total}] {outcome.upper()} {work.parcel_id}",
+                        file=log,
+                        flush=True,
+                    )
 
                 if outcome == "done":
                     stats.done += 1

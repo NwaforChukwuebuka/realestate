@@ -59,6 +59,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         streetview_cache=args.streetview_cache,
         openai_model=args.openai_model,
         stop_after_images=args.stop_after_images,
+        progress=not args.quiet,
     )
 
     print(
@@ -148,6 +149,12 @@ def main(argv: list[str] | None = None) -> int:
         "--stop-after-images",
         action="store_true",
         help="Download Street View JPEGs only; leave pipeline_status pending (no OpenAI)",
+    )
+    run_p.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="No per-parcel progress on stderr (summary on stdout only)",
     )
     run_p.set_defaults(_handler=_cmd_run)
 
