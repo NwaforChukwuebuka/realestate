@@ -13,7 +13,11 @@ from pipeline.models import PendingParcelWork, PipelineRow
 from pipeline.store import PipelineStore
 from streetview.images import StreetViewImageFetcher
 from streetview.metadata import StreetViewMetadataClient
-from verification.scorer import PropertyVerifier, VerificationError
+from verification.scorer import (
+    PropertyVerifier,
+    VerificationError,
+    select_primary_streetview_frame,
+)
 
 ParcelOutcome = Literal["done", "failed", "skipped_no_street_view", "not_pending", "stopped_after_images"]
 
@@ -139,6 +143,7 @@ def process_one_parcel(
                 property_lat=lat,
                 property_lng=lng,
                 output_dir=out_dir,
+                heading_offsets=(0,),
             )
             img_paths = [c.local_path for c in fr.captures if c.local_path is not None]
             if not img_paths:
@@ -156,7 +161,8 @@ def process_one_parcel(
             return "failed"
 
         ctx = verification_context(work)
-        v = verifier.analyze_images(img_paths, user_context=ctx)
+        verify_paths = select_primary_streetview_frame(img_paths)
+        v = verifier.analyze_images(verify_paths, user_context=ctx)
         pstore.apply_verification(pid, v)
         return "done"
 

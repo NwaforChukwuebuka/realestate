@@ -6,7 +6,12 @@ from verification.models import (
     PropertyVerificationResult,
     RecommendedAction,
 )
-from verification.scorer import PropertyVerifier, VerificationError, normalize_verification_dict
+from verification.scorer import (
+    PropertyVerifier,
+    VerificationError,
+    normalize_verification_dict,
+    select_primary_streetview_frame,
+)
 
 __all__ = [
     "DISTRESS_SIGN_CATEGORIES",
@@ -16,4 +21,5 @@ __all__ = [
     "RecommendedAction",
     "VerificationError",
     "normalize_verification_dict",
+    "select_primary_streetview_frame",
 ]

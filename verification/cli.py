@@ -11,17 +11,24 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from verification.scorer import PropertyVerifier, VerificationError
+from verification.scorer import (
+    PropertyVerifier,
+    VerificationError,
+    select_primary_streetview_frame,
+)
 
 _EPILOG = """Examples (use real paths — placeholders like img1.jpg will not exist):
 
+  python -m verification --dir streetview_images\\<pano_subfolder> --one
+      Single image: prefers a frame named with off+000 (centered), else first file. Uses detail=low for fewer vision tokens.
+
   python -m verification --dir streetview_images\\<pano_subfolder>
-      All .jpg/.jpeg/.png in that folder (e.g. output from: python -m streetview images)
+      All .jpg/.jpeg/.png in that folder
 
-  python -m verification path\\to\\off+000_heading_090_fov_90.jpg path\\to\\off+015_heading_105_fov_90.jpg
-      One or more explicit image files
+  python -m verification path\\to\\off+000_heading_005_fov_90.jpg
+      One explicit image (recommended for lowest token use)
 
-Tip: run Street View download first, then pass the folder that contains the JPEGs."""
+Tip: run Street View download first, then pass the folder or one JPEG."""
 
 
 def _load_env() -> str | None:
@@ -46,6 +53,8 @@ def collect_image_paths(args: argparse.Namespace) -> tuple[list[Path], str | Non
                 unique.append(rp)
         if not unique:
             return [], f"No .jpg / .jpeg / .png files in {d}"
+        if getattr(args, "one", False):
+            return select_primary_streetview_frame(unique), None
         return unique, None
     if not args.images:
         return [], "Pass one or more image paths, or use --dir DIR"
@@ -83,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Analyze all .jpg/.jpeg/.png in this directory (sorted)",
     )
     p.add_argument(
+        "--one",
+        action="store_true",
+        help="With --dir only: send one image (prefers filename containing off+000, else first file). Saves vision tokens.",
+    )
+    p.add_argument(
         "-c",
         "--context",
         default="",
@@ -97,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dir is not None and args.images:
         p.error("Use either image paths or --dir, not both")
+    if args.one and args.dir is None:
+        p.error("--one requires --dir")
 
     key = _load_env()
     if not key:

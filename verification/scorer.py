@@ -131,6 +131,17 @@ def normalize_verification_dict(data: dict[str, Any]) -> PropertyVerificationRes
     )
 
 
+def select_primary_streetview_frame(paths: Sequence[str | Path]) -> list[Path]:
+    """Return a one-element list for the vision API: prefer ``off+000`` in the filename, else the first path."""
+    if not paths:
+        raise ValueError("paths must not be empty")
+    resolved = [Path(p) for p in paths]
+    for p in resolved:
+        if "off+000" in p.name:
+            return [p]
+    return [resolved[0]]
+
+
 class PropertyVerifier:
     """OpenAI vision (chat completions) for target check + distress scoring."""
 
@@ -158,11 +169,16 @@ class PropertyVerifier:
             if not p.is_file():
                 raise FileNotFoundError(f"Image not found: {p}")
 
+        intro = (
+            "This is a Street View capture of the property. "
+            if len(paths) == 1
+            else "These are Street View captures of the same property from slightly different headings. "
+        )
         user_parts: list[dict[str, Any]] = [
             {
                 "type": "text",
                 "text": (
-                    "These are Street View captures of the same property from slightly different headings. "
+                    intro
                     + (user_context.strip() + "\n\n" if user_context and user_context.strip() else "")
                     + "Return only the JSON object described in the system message."
                 ),
@@ -173,7 +189,10 @@ class PropertyVerifier:
             user_parts.append(
                 {
                     "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{b64}"},
+                    "image_url": {
+                        "url": f"data:{mime};base64,{b64}",
+                        "detail": "low",
+                    },
                 }
             )
 

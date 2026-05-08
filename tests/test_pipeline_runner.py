@@ -95,10 +95,10 @@ def test_process_one_parcel_with_mocks(tmp_path: Path) -> None:
         api_status="OK",
     )
 
-    img_a = tmp_path / "cap_a.jpg"
-    img_b = tmp_path / "cap_b.jpg"
-    img_a.write_bytes(b"\xff\xd8\xff\xd9")
-    img_b.write_bytes(b"\xff\xd8\xff\xd9")
+    img_center = tmp_path / "off+000_heading_090_fov_90.jpg"
+    img_side = tmp_path / "off+015_heading_105_fov_90.jpg"
+    img_center.write_bytes(b"\xff\xd8\xff\xd9")
+    img_side.write_bytes(b"\xff\xd8\xff\xd9")
 
     fetcher = MagicMock()
     fetcher.fetch_multi_angle_set.return_value = StreetViewImageFetchResult(
@@ -111,8 +111,8 @@ def test_process_one_parcel_with_mocks(tmp_path: Path) -> None:
         fov=90,
         size=(640, 640),
         captures=(
-            StreetViewAngleCapture(offset_deg=0, heading_deg=90.0, image_url="u1", local_path=img_a),
-            StreetViewAngleCapture(offset_deg=15, heading_deg=105.0, image_url="u2", local_path=img_b),
+            StreetViewAngleCapture(offset_deg=0, heading_deg=90.0, image_url="u1", local_path=img_center),
+            StreetViewAngleCapture(offset_deg=15, heading_deg=105.0, image_url="u2", local_path=img_side),
         ),
     )
 
@@ -148,3 +148,5 @@ def test_process_one_parcel_with_mocks(tmp_path: Path) -> None:
     sv_meta.lookup.assert_called_once()
     fetcher.fetch_multi_angle_set.assert_called_once()
     verifier.analyze_images.assert_called_once()
+    positional, _kwargs = verifier.analyze_images.call_args
+    assert positional[0] == [img_center]

@@ -69,7 +69,10 @@ def cmd_metadata(argv: list[str]) -> int:
 def cmd_images(argv: list[str]) -> int:
     p = argparse.ArgumentParser(
         prog="python -m streetview images",
-        description="Street View metadata + multi-angle Static API download (heading toward property)",
+        description=(
+            "Street View metadata + Static API download (heading toward property). "
+            "Default: one primary JPEG (off+000). Use --multi for all five offsets."
+        ),
     )
     p.add_argument(
         "lat",
@@ -97,6 +100,11 @@ def cmd_images(argv: list[str]) -> int:
         default=Path(".streetview_cache.sqlite"),
         help="SQLite metadata cache path",
     )
+    p.add_argument(
+        "--multi",
+        action="store_true",
+        help="Download all five heading offsets (default: single off+000 image to save disk)",
+    )
     args = p.parse_args(argv)
 
     key = _load_env()
@@ -116,6 +124,7 @@ def cmd_images(argv: list[str]) -> int:
     assert m.pano_id is not None and m.pano_lat is not None and m.pano_lng is not None
 
     fetcher = StreetViewImageFetcher(api_key=key)
+    heading_offsets = None if args.multi else (0,)
     result = fetcher.fetch_multi_angle_set(
         pano_id=m.pano_id,
         pano_lat=m.pano_lat,
@@ -123,6 +132,7 @@ def cmd_images(argv: list[str]) -> int:
         property_lat=args.lat,
         property_lng=args.lng,
         output_dir=args.out,
+        heading_offsets=heading_offsets,
     )
 
     payload = {

@@ -111,6 +111,33 @@ def test_normalize_invalid_number_raises() -> None:
         )
 
 
+def test_select_primary_streetview_frame_prefers_off000(tmp_path: Path) -> None:
+    from verification.scorer import select_primary_streetview_frame
+
+    primary = tmp_path / "off+000_heading_090_fov_90.jpg"
+    other = tmp_path / "off+015_heading_105_fov_90.jpg"
+    primary.write_bytes(b"1")
+    other.write_bytes(b"2")
+    assert select_primary_streetview_frame([other, primary]) == [primary]
+
+
+def test_select_primary_streetview_frame_fallback_first(tmp_path: Path) -> None:
+    from verification.scorer import select_primary_streetview_frame
+
+    first = tmp_path / "cap_a.jpg"
+    second = tmp_path / "cap_b.jpg"
+    first.write_bytes(b"1")
+    second.write_bytes(b"2")
+    assert select_primary_streetview_frame([first, second]) == [first]
+
+
+def test_select_primary_streetview_frame_empty_raises() -> None:
+    from verification.scorer import select_primary_streetview_frame
+
+    with pytest.raises(ValueError, match="empty"):
+        select_primary_streetview_frame([])
+
+
 def _fake_jpeg(path: Path) -> None:
     path.write_bytes(b"\xff\xd8\xff\xd9")  # minimal JPEG EOI
 
@@ -173,10 +200,22 @@ def test_collect_image_paths_from_dir(tmp_path: Path) -> None:
 
     (tmp_path / "b.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     (tmp_path / "a.jpg").write_bytes(b"\xff\xd8\xff\xd9")
-    args = argparse.Namespace(dir=tmp_path, images=[])
+    args = argparse.Namespace(dir=tmp_path, images=[], one=False)
     paths, err = collect_image_paths(args)
     assert err is None
     assert [p.name for p in paths] == ["a.jpg", "b.png"]
+
+
+def test_collect_image_paths_dir_one_prefers_off000(tmp_path: Path) -> None:
+    from verification.cli import collect_image_paths
+
+    (tmp_path / "off-015_heading_350_fov_90.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    (tmp_path / "off+000_heading_005_fov_90.jpg").write_bytes(b"\xff\xd8\xff\xd9")
+    args = argparse.Namespace(dir=tmp_path, images=[], one=True)
+    paths, err = collect_image_paths(args)
+    assert err is None
+    assert len(paths) == 1
+    assert paths[0].name == "off+000_heading_005_fov_90.jpg"
 
 
 def test_cli_main_mock_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -6,7 +6,11 @@ from urllib.parse import urlencode
 
 import requests
 
-from streetview.heading import headings_for_offsets, initial_bearing_degrees
+from streetview.heading import (
+    HEADING_OFFSETS_DEG,
+    headings_for_offsets,
+    initial_bearing_degrees,
+)
 
 GOOGLE_STREETVIEW_STATIC_URL = "https://maps.googleapis.com/maps/api/streetview"
 
@@ -70,7 +74,7 @@ def _capture_filename(offset_deg: int, heading_deg: float, fov: int) -> str:
 
 
 class StreetViewImageFetcher:
-    """Compute pano→property heading and download multi-angle Static API images."""
+    """Compute pano→property heading and download Street View Static API JPEGs."""
 
     def __init__(
         self,
@@ -99,7 +103,15 @@ class StreetViewImageFetcher:
         fov: int | None = None,
         size: tuple[int, int] | None = None,
         pitch: int | None = None,
+        heading_offsets: tuple[int, ...] | None = None,
     ) -> StreetViewImageFetchResult:
+        """Download one or more viewpoints.
+
+        ``heading_offsets`` controls which lateral offsets (degrees) are taken relative
+        to the pano→property bearing. ``None`` downloads the full multi-angle set
+        (:data:`streetview.heading.HEADING_OFFSETS_DEG`). Use ``(0,)`` for a single
+        centered frame (``off+000_…``) to save disk and API calls.
+        """
         fov_i = int(fov if fov is not None else self._default_fov)
         size_t = size if size is not None else self._default_size
         pitch_i = int(pitch if pitch is not None else self._default_pitch)
@@ -108,8 +120,9 @@ class StreetViewImageFetcher:
         out = Path(output_dir) / _safe_pano_dir_name(pano_id)
         out.mkdir(parents=True, exist_ok=True)
 
+        offsets = heading_offsets if heading_offsets is not None else HEADING_OFFSETS_DEG
         captures: list[StreetViewAngleCapture] = []
-        for offset, heading in headings_for_offsets(base):
+        for offset, heading in headings_for_offsets(base, offsets):
             url = build_streetview_static_url(
                 api_key=self._api_key,
                 pano_id=pano_id,

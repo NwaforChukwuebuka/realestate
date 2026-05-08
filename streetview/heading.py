@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from typing import Sequence
 
 # Order matches plan: base, +15, -15, +30, -30 (degrees relative to pano→property bearing).
 HEADING_OFFSETS_DEG: tuple[int, ...] = (0, 15, -15, 30, -30)
@@ -34,9 +35,16 @@ def initial_bearing_degrees(
     return normalize_heading_degrees(math.degrees(θ))
 
 
-def headings_for_offsets(base_heading_deg: float) -> list[tuple[int, float]]:
-    """Return (offset, normalized_heading) for each planned capture angle."""
+def headings_for_offsets(
+    base_heading_deg: float,
+    offsets: Sequence[int] | None = None,
+) -> list[tuple[int, float]]:
+    """Return (offset, normalized_heading) for each capture angle.
+
+    If ``offsets`` is omitted, uses :data:`HEADING_OFFSETS_DEG` (five viewpoints).
+    """
+    offs = tuple(offsets) if offsets is not None else HEADING_OFFSETS_DEG
     return [
         (off, normalize_heading_degrees(base_heading_deg + off))
-        for off in HEADING_OFFSETS_DEG
+        for off in offs
     ]

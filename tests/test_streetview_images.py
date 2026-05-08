@@ -45,6 +45,13 @@ def test_headings_for_offsets_order_and_wrap() -> None:
     assert pairs[4][1] == pytest.approx(340.0)
 
 
+def test_headings_for_offsets_custom_subset() -> None:
+    pairs = headings_for_offsets(100.0, (0,))
+    assert len(pairs) == 1
+    assert pairs[0][0] == 0
+    assert pairs[0][1] == pytest.approx(100.0)
+
+
 def test_build_streetview_static_url_query() -> None:
     u = build_streetview_static_url(
         api_key="k",
@@ -97,6 +104,34 @@ def test_fetch_multi_angle_set_writes_jpegs() -> None:
                 assert "maps.googleapis.com" in c.image_url
                 assert "heading=" in c.image_url
             assert session.get.call_count == 5  # type: ignore[attr-defined]
+
+
+def test_fetch_multi_angle_set_primary_only_one_request(tmp_path: Path) -> None:
+    jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+
+    def fake_get(url: str, *_args: object, **_kwargs: object) -> MagicMock:
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.headers = {"Content-Type": "image/jpeg"}
+        resp.content = jpeg
+        resp.text = ""
+        return resp
+
+    session = requests.Session()
+    with patch.object(session, "get", side_effect=fake_get):
+        fetcher = StreetViewImageFetcher(api_key="key", session=session)
+        r = fetcher.fetch_multi_angle_set(
+            pano_id="pano1",
+            pano_lat=25.775,
+            pano_lng=-80.194,
+            property_lat=25.776,
+            property_lng=-80.193,
+            output_dir=tmp_path,
+            heading_offsets=(0,),
+        )
+        assert len(r.captures) == 1
+        assert r.captures[0].offset_deg == 0
+        assert session.get.call_count == 1  # type: ignore[attr-defined]
 
 
 @pytest.mark.integration
