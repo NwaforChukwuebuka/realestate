@@ -220,16 +220,30 @@ def run_pending_batch(
             batch = pstore.fetch_pending_with_addresses(limit)
             total = len(batch)
             if progress:
-                print(
-                    f"[pipeline] {total} pending parcel(s) in this batch (limit was {limit}).",
-                    file=log,
-                    flush=True,
-                )
+                if total == 0:
+                    print(
+                        "[pipeline] 0 pending parcel(s) — nothing to do "
+                        f"(batch limit was {limit}; only rows with pipeline_status='pending' are run).",
+                        file=log,
+                        flush=True,
+                    )
+                else:
+                    first_id = batch[0].parcel_id
+                    last_id = batch[-1].parcel_id
+                    print(
+                        f"[pipeline] This run: {total} pending parcel(s) "
+                        f"(limit {limit}). Ordered by parcel_id; "
+                        f"range in this batch {first_id} … {last_id}. "
+                        f"Counters [i/{total}] count items in this run only, not total DB position.",
+                        file=log,
+                        flush=True,
+                    )
             for idx, work in enumerate(batch, start=1):
                 stats.attempted += 1
                 if progress:
                     print(
-                        f"[pipeline] [{idx}/{total}] START {work.parcel_id} — {_work_one_line_address(work)}",
+                        f"[pipeline] [{idx}/{total} this run] START {work.parcel_id} — "
+                        f"{_work_one_line_address(work)}",
                         file=log,
                         flush=True,
                     )
@@ -251,7 +265,7 @@ def run_pending_batch(
 
                 if progress:
                     print(
-                        f"[pipeline] [{idx}/{total}] {outcome.upper()} {work.parcel_id}",
+                        f"[pipeline] [{idx}/{total} this run] {outcome.upper()} {work.parcel_id}",
                         file=log,
                         flush=True,
                     )
