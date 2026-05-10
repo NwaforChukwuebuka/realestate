@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Locator, Page, sync_playwright
 
 URL = "https://onlineservices.miamidadeclerk.gov/officialrecords"
 
@@ -93,6 +93,68 @@ def _extract_record(address: str, text: str) -> OfficialRecord:
         doc_type_label=label,
         is_high_value=code in HIGH_VALUE_DOC_TYPES if code else False,
         raw_text=text,
+    )
+
+
+def _field_from_card(card: Locator, data_id: str) -> str:
+    """Read a result-card value from ``<p data-id=\"…\">`` (see TitleSearchTab markup)."""
+    try:
+        loc = card.locator(f'p[data-id="{data_id}"]')
+        if loc.count() == 0:
+            return ""
+        t = loc.first.inner_text(timeout=5_000)
+        return " ".join(t.split()).strip()
+    except Exception:
+        return ""
+
+
+def _record_from_result_card(address: str, card: Locator) -> Optional[OfficialRecord]:
+    """
+    Build an ``OfficialRecord`` from one ``.TitleSearchTab`` result card.
+
+    The live site exposes labeled fields via ``data-id`` on ``<p>`` value
+    nodes (e.g. Document Type), not only plain-text blobs or 3-letter codes.
+    """
+    try:
+        raw_text = card.inner_text(timeout=5_000).strip()
+    except Exception:
+        raw_text = ""
+
+    header = ""
+    try:
+        hb = card.locator("p.fs-5.fw-bold")
+        if hb.count() > 0:
+            header = hb.first.inner_text(timeout=5_000)
+    except Exception:
+        pass
+
+    m = _FILE_NUM_RE.search(header) or _FILE_NUM_RE.search(raw_text)
+    file_num = m.group(1).strip() if m else ""
+    if not file_num:
+        return None
+
+    party = _field_from_card(card, "Party Name")
+    recorded = _field_from_card(card, "Rec Date")
+    if not recorded:
+        md = _DATE_RE.search(raw_text)
+        recorded = md.group(1) if md else ""
+
+    doc_type_text = _field_from_card(card, "Document Type")
+    haystack = f"{doc_type_text}\n{raw_text}"
+    mdoc = _DOC_CODE_RE.search(haystack)
+    code: Optional[str] = mdoc.group(1).upper() if mdoc else None
+    map_label = HIGH_VALUE_DOC_TYPES.get(code) if code else None
+    doc_label: Optional[str] = doc_type_text if doc_type_text else map_label
+
+    return OfficialRecord(
+        address=address,
+        clerks_file_number=file_num,
+        party_names=party,
+        recorded_date=recorded,
+        doc_type_code=code,
+        doc_type_label=doc_label,
+        is_high_value=bool(code and code in HIGH_VALUE_DOC_TYPES),
+        raw_text=raw_text,
     )
 
 
@@ -267,33 +329,44 @@ class OfficialRecordsScraper:
         """Scrape all result items from the current page."""
         records: list[OfficialRecord] = []
 
-        # Results appear as clickable items containing "Clerk's File Number"
+        tabs = page.locator(".TitleSearchTab")
+        n = tabs.count()
+        seen: set[str] = set()
+
+        for i in range(n):
+            card = tabs.nth(i)
+            rec = _record_from_result_card(address, card)
+            if rec is None:
+                continue
+            if rec.clerks_file_number in seen:
+                continue
+            seen.add(rec.clerks_file_number)
+            if self.all_records or rec.is_high_value:
+                records.append(rec)
+
+        if n > 0:
+            return records
+
+        # Legacy fallback (older markup / unexpected DOM): best-effort text scrape
         items = page.locator(
             "xpath=//*[contains(text(),'File Number') or contains(text(),'File Number')]"
             "/ancestor-or-self::*[self::a or self::li or self::tr or self::div][1]"
         ).all()
-
         if not items:
-            # Broader fallback: any element whose text contains the file number pattern
             items = page.locator("text=Clerk").all()
 
-        seen: set[str] = set()
         for el in items:
             try:
                 text = el.inner_text(timeout=5_000)
             except Exception:
                 continue
-
             if "File Number" not in text and "File Number" not in text:
                 continue
-
-            # Deduplicate by file number
             m = _FILE_NUM_RE.search(text)
             key = m.group(1).strip() if m else text[:60]
             if key in seen:
                 continue
             seen.add(key)
-
             rec = _extract_record(address, text)
             if self.all_records or rec.is_high_value:
                 records.append(rec)
