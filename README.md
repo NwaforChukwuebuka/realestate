@@ -259,3 +259,139 @@ python -m official_records --save-html ./html_dumps 243 NW 10 ST
 | `--timeout MS` | `30000` | Per-action timeout |
 | `--slow-mo MS` | `0` | Pause before every action (try `500` to watch) |
 | `--save-html DIR` | off | Save page HTML after each search |
+
+---
+
+## 4. Research Pipeline (`research`)
+
+Combines all three scrapers into one automated pipeline. Reads candidate folios from `.munroll_raw.sqlite` (`properties_normalized` table), runs Property Appraiser → Regulation Cases → Official Records for each folio, scores the result, and writes findings back to a `research_results` table in the same database.
+
+### Full flow
+
+```
+.munroll_raw.sqlite
+  └─ properties_normalized   ← 419k normalized parcel rows
+  └─ property_prescores      ← fast pre-scores (no browser)
+  └─ research_results        ← per-parcel scraper output
+```
+
+**Step 1 — Pre-score all properties (no browser, runs in seconds)**
+
+```bash
+python -m research --pre-score
+```
+
+Scores every row in `properties_normalized` using DB-only signals (absentee ownership, years owned, old property, trust/LLC) and stores results in `property_prescores`. Run this once after importing your data.
+
+**Step 2 — (Optional) Explore pre-scored leads before scraping**
+
+```bash
+# Export everything with a pre-score ≥ 1
+python -m research --export-scores --out all_leads.csv
+
+# Only strong leads (score ≥ 2)
+python -m research --export-scores --min-score 2 --out strong_leads.csv
+
+# Filter to one category
+python -m research --export-scores --category motivated_sellers --out motivated.csv
+python -m research --export-scores --category distressed_ownership --out distressed.csv
+```
+
+**Step 3 — Check how many candidates match your filters**
+
+```bash
+python -m research --db --count-only
+python -m research --db --count-only --absentee-only --min-years 10
+```
+
+**Step 4 — Run the full 3-scraper pipeline**
+
+```bash
+# Top 50 absentee owners not yet researched
+python -m research --db --absentee-only --limit 50
+
+# Absentee + old property, save results to CSV
+python -m research --db --absentee-only --old-property --limit 100 --out opps.csv
+
+# Owned 15+ years, headless, 4 parallel workers, logs saved
+python -m research --db --min-years 15 --workers 4 --headless --log-dir logs/
+
+# Re-research parcels that already have a result
+python -m research --db --absentee-only --limit 20 --rerun
+```
+
+Each folio is saved to `research_results` immediately after it is processed (crash-safe). Already-researched parcels are skipped automatically unless `--rerun` is passed.
+
+**Step 5 — Export wholesale opportunities**
+
+```bash
+# Print to stdout
+python -m research --db --export-opportunities
+
+# Save to file
+python -m research --db --export-opportunities --out opportunities.csv
+python -m research --db --export-opportunities --out opportunities.json
+```
+
+### Ad-hoc / non-DB usage
+
+```bash
+# Single folio
+python -m research 0101010501080
+
+# Multiple folios from a file
+python -m research --file folios.txt
+
+# From a CSV column
+python -m research --csv pipeline.csv --folio-col folio_number
+```
+
+### Output fields (flat CSV / `--out *.csv`)
+
+| Field | Description |
+|---|---|
+| `folio` | Parcel ID |
+| `property_address` | Physical address |
+| `owner_name` | Owner as recorded |
+| `mailing_address` | Owner mailing address |
+| `year_built` | Year built |
+| `last_sale_date` | Most recent sale date |
+| `last_sale_price` | Most recent sale price |
+| `absentee_owner` | Mailing ≠ property address |
+| `trust_or_llc` | LLC / TR / LTD in owner name |
+| `quality_lead` | Absentee individual owner |
+| `rer_found_by` | RER search method used (`folio` / `address` / `owner` / `none`) |
+| `regulation_cases` | Total RER cases found |
+| `strong_violations` | Cases flagged as strong lead indicators |
+| `official_records` | Total official record documents found |
+| `high_value_doc_types` | Comma-separated high-value doc type codes |
+| `triggered_signals` | Pipe-separated signal names |
+| `categories` | Pipe-separated category names |
+| `lead_score` | Number of triggered signals |
+| `is_wholesale_opportunity` | `True` if `lead_score ≥ 2` |
+
+### `--db` options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--absentee-only` | off | Only absentee owners |
+| `--old-property` | off | Only `old_property = 1` |
+| `--out-of-state` | off | Only out-of-state owners |
+| `--min-years N` | `0` | Only properties owned ≥ N years |
+| `--limit N` | none | Max folios to process |
+| `--offset N` | `0` | Skip first N rows (resume a batch) |
+| `--rerun` | off | Re-research already-processed parcels |
+| `--count-only` | off | Print matching candidate count and exit |
+| `--export-opportunities` | off | Export wholesale opportunities and exit |
+
+### Browser / worker options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--workers N` | `1` | Parallel browser workers |
+| `--log-dir DIR` | none | Directory for per-worker log files |
+| `--headless` | off | Run without a visible browser window |
+| `--delay SEC` | `1.5` | Seconds between searches (single-worker) |
+| `--timeout MS` | `30000` | Per-action timeout |
+| `--slow-mo MS` | `0` | Pause before every action |
+| `--save-html DIR` | off | Save page HTML snapshots for debugging |
