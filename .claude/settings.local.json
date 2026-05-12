@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(python -c \"import playwright; print\\('playwright already installed'\\)\" 2>&1)"
+      "PowerShell(python -c \"import playwright; print\\('playwright already installed'\\)\" 2>&1)",
+      "Bash(python -c ' *)"
     ]
   }
 }

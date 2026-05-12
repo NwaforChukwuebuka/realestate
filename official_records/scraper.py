@@ -1,9 +1,10 @@
 """
 Miami-Dade Official Records scraper.
 
-Searches the Miami-Dade Clerk's public records by property address and
-surfaces high-value wholesale lead indicators (liens, judgments, probate,
-bankruptcy, etc.).
+Runs one broad Property/Condo search per address (no per-document-type filter),
+scrapes every row visible on the results listing (card fields only — no
+opening individual instruments), and flags wholesale lead indicators from the
+``Document Type`` text on each card.
 """
 
 from __future__ import annotations
@@ -19,7 +20,26 @@ from playwright.sync_api import Locator, Page, sync_playwright
 
 URL = "https://onlineservices.miamidadeclerk.gov/officialrecords"
 
-# Document type codes rated 8/10+ as wholesale lead indicators
+# Reference: exact ``<option value>`` strings on the site for each wholesale code
+# (used for documentation / cross-check with project2.md; search is broad — we
+# classify leads from listing card text, not by iterating these selects).
+HIGH_VALUE_WEB_OPTION_VALUES: tuple[str, ...] = (
+    "LIS PENDENS - LIS",
+    "NOTICE OF TAX LIEN - NTL",
+    "LIEN - LIE",
+    "FEDERAL TAX LIEN  - FTL",
+    "PROBATE & ADMINISTRATION - PAD",
+    "BANKRUPTCY  - BAN",
+    "JUDGEMENT - JUD",
+    "ANY LIEN JUDGMENT - LNJUD",
+    "CIVIL COURT  PAPER - CVP",
+    "QUIT CLAIM DEED - QCD",
+    "DISSOLUTION OF MARRIAGE - DOM",
+    "PROBATE ORDER OF DISTRIBUTION - PRO",
+    "AFFIDAVIT WITH JUDGMENT ATTACHED - AJ",
+)
+
+# Short codes → human labels (project playbook); codes match the website suffix after " - ".
 HIGH_VALUE_DOC_TYPES: dict[str, str] = {
     "LIS":   "Lis Pendens",
     "NTL":   "Notice of Tax Lien",
@@ -45,6 +65,23 @@ _PARTY_RE    = re.compile(r"Party\s+Name\s*(.+)", re.IGNORECASE | re.DOTALL)
 _DATE_RE     = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2})\b")
 
 
+def _document_type_code_from_site_label(doc_type_text: str) -> Optional[str]:
+    """
+    Extract the clerk document-type code from the site's label, which uses
+    ``FULL NAME - CODE`` (e.g. ``LIS PENDENS - LIS``). Prefer this over a
+    free-text regex so phrases like "Lis Pendens" inside other titles do not
+    false-match wholesale codes.
+    """
+    t = " ".join(doc_type_text.split()).strip()
+    if not t:
+        return None
+    if " - " in t:
+        tail = t.rsplit(" - ", 1)[-1].strip().upper()
+        return tail or None
+    m = _DOC_CODE_RE.search(t)
+    return m.group(1).upper() if m else None
+
+
 def _address_slug(address: str, max_len: int = 80) -> str:
     s = re.sub(r"[^\w\-]+", "_", address.strip()).strip("_")
     return s[:max_len] if len(s) > max_len else s
@@ -60,6 +97,8 @@ class OfficialRecord:
     doc_type_label: Optional[str]
     is_high_value: bool
     raw_text: str
+    # 1-based index of the search in a batch run (for merging with input CSV rows).
+    search_index: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -77,12 +116,12 @@ def _extract_record(address: str, text: str) -> OfficialRecord:
     m = _DATE_RE.search(text)
     date = m.group(1) if m else ""
 
-    m = _DOC_CODE_RE.search(text)
-    code: Optional[str] = None
-    label: Optional[str] = None
-    if m:
-        code = m.group(1).upper()
-        label = HIGH_VALUE_DOC_TYPES.get(code)
+    code = _document_type_code_from_site_label(text)
+    if code is None:
+        m = _DOC_CODE_RE.search(text)
+        if m:
+            code = m.group(1).upper()
+    label = HIGH_VALUE_DOC_TYPES.get(code) if code else None
 
     return OfficialRecord(
         address=address,
@@ -91,8 +130,9 @@ def _extract_record(address: str, text: str) -> OfficialRecord:
         recorded_date=date,
         doc_type_code=code,
         doc_type_label=label,
-        is_high_value=code in HIGH_VALUE_DOC_TYPES if code else False,
+        is_high_value=bool(code and code in HIGH_VALUE_DOC_TYPES),
         raw_text=text,
+        search_index=0,
     )
 
 
@@ -140,9 +180,9 @@ def _record_from_result_card(address: str, card: Locator) -> Optional[OfficialRe
         recorded = md.group(1) if md else ""
 
     doc_type_text = _field_from_card(card, "Document Type")
-    haystack = f"{doc_type_text}\n{raw_text}"
-    mdoc = _DOC_CODE_RE.search(haystack)
-    code: Optional[str] = mdoc.group(1).upper() if mdoc else None
+    code = _document_type_code_from_site_label(doc_type_text)
+    if code is None and header:
+        code = _document_type_code_from_site_label(header)
     map_label = HIGH_VALUE_DOC_TYPES.get(code) if code else None
     doc_label: Optional[str] = doc_type_text if doc_type_text else map_label
 
@@ -155,6 +195,7 @@ def _record_from_result_card(address: str, card: Locator) -> Optional[OfficialRe
         doc_type_label=doc_label,
         is_high_value=bool(code and code in HIGH_VALUE_DOC_TYPES),
         raw_text=raw_text,
+        search_index=0,
     )
 
 
@@ -174,11 +215,14 @@ class OfficialRecordsScraper:
         Pause Playwright before every action by this many ms so you can
         watch the browser as it works (default 0 = no slowdown). Try 500.
     all_records:
-        When False (default) only return high-value lead records.
-        When True return every result regardless of doc type.
+        When False (default), run one broad Property/Condo search (document type
+        cleared), scrape every result card from the listing page without opening
+        detail views, and return only rows whose ``Document Type`` matches a
+        wholesale indicator. When True, return every listing row (same single
+        search); ``is_high_value`` is still set from the card line.
     results_html_dir:
-        If set, after each search the full results page HTML is written to
-        ``<dir>/official_records_<n>_<address_slug>.html`` for offline analysis.
+        If set, after each address search writes one HTML snapshot:
+        ``official_records_<n>_<address_slug>.html``.
     """
 
     def __init__(
@@ -197,13 +241,64 @@ class OfficialRecordsScraper:
         self.slow_mo_ms = slow_mo_ms
         self.all_records = all_records
         self.results_html_dir = results_html_dir
+        self._last_listing_row_count = 0
+        self._last_wholesale_row_count = 0
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _setup_page(self, page: Page) -> None:
-        """Navigate to the site and click the Property/Condo search tab."""
+    def _scrape_listing_rows_unfiltered(
+        self, page: Page, address: str
+    ) -> list[OfficialRecord]:
+        """
+        Every parsed row on the current results listing (card view), with no
+        wholesale filter and no navigation into instrument detail pages.
+        """
+        all_rows: list[OfficialRecord] = []
+
+        tabs = page.locator(".TitleSearchTab")
+        n = tabs.count()
+        seen: set[str] = set()
+
+        for i in range(n):
+            card = tabs.nth(i)
+            rec = _record_from_result_card(address, card)
+            if rec is None:
+                continue
+            if rec.clerks_file_number in seen:
+                continue
+            seen.add(rec.clerks_file_number)
+            all_rows.append(rec)
+
+        if n > 0:
+            return all_rows
+
+        items = page.locator(
+            "xpath=//*[contains(text(),'File Number') or contains(text(),'File Number')]"
+            "/ancestor-or-self::*[self::a or self::li or self::tr or self::div][1]"
+        ).all()
+        if not items:
+            items = page.locator("text=Clerk").all()
+
+        for el in items:
+            try:
+                text = el.inner_text(timeout=5_000)
+            except Exception:
+                continue
+            if "File Number" not in text and "File Number" not in text:
+                continue
+            m = _FILE_NUM_RE.search(text)
+            key = m.group(1).strip() if m else text[:60]
+            if key in seen:
+                continue
+            seen.add(key)
+            all_rows.append(_extract_record(address, text))
+
+        return all_rows
+
+    def _goto_app_and_open_property_tab(self, page: Page) -> None:
+        """Navigate to the site and open the Property/Condo search tab."""
         page.goto(URL, wait_until="domcontentloaded", timeout=self.timeout_ms)
         # The site may show a splash / standard-search landing first
         try:
@@ -217,33 +312,18 @@ class OfficialRecordsScraper:
         # React SPA: wait until the Property/Condo address field is mounted
         page.locator("#addressNoUnit").wait_for(state="visible", timeout=self.timeout_ms)
 
-    def _select_doc_types(self, page: Page) -> None:
-        """
-        Attempt to select all high-value document types in the Document Type
-        field.  Silently skipped if the control cannot be found.
-        """
-        doc_type_codes = list(HIGH_VALUE_DOC_TYPES.keys())
+    def _setup_page(self, page: Page) -> None:
+        """First-load navigation (same as returning to the Property/Condo form)."""
+        self._goto_app_and_open_property_tab(page)
 
-        # Try a <select multiple> first
+    def _ensure_property_search_form(self, page: Page) -> None:
+        """If a prior search left the results view, reload the Property/Condo form."""
         try:
-            sel = page.locator("select").filter(has_text=re.compile(r"LIS|NTL|LIE|FTL|BAN|JUD", re.I))
-            if sel.count():
-                sel.first.select_option(doc_type_codes)
+            if page.locator("#addressNoUnit").is_visible(timeout=1_500):
                 return
         except Exception:
             pass
-
-        # Try an autocomplete / combobox labelled "Document Type"
-        try:
-            combo = page.get_by_role("combobox", name=re.compile(r"Document Type", re.I))
-            if combo.count():
-                for code in doc_type_codes:
-                    combo.fill(code)
-                    page.keyboard.press("Enter")
-                    time.sleep(0.3)
-                return
-        except Exception:
-            pass
+        self._goto_app_and_open_property_tab(page)
 
     def _wait_for_results_ui(self, page: Page) -> "str":
         """
@@ -287,8 +367,18 @@ class OfficialRecordsScraper:
             pass
         return outcome
 
-    def _do_search(self, page: Page, address: str) -> None:
-        """Fill address and hit Search."""
+    def _run_one_property_search(
+        self,
+        page: Page,
+        address: str,
+        doc_option_value: Optional[str],
+        *,
+        log_empty: bool = True,
+    ) -> None:
+        """
+        Fill address, optionally set ``#documentType`` to a site option *value*,
+        and submit. ``doc_option_value`` ``None`` clears the filter (all types).
+        """
         addr_box = page.locator("#addressNoUnit")
         addr_box.wait_for(state="visible", timeout=self.timeout_ms)
         addr_box.click(timeout=self.timeout_ms)
@@ -300,18 +390,19 @@ class OfficialRecordsScraper:
         addr_box.fill("")
         addr_box.press_sequentially(address, delay=40)
         addr_box.press("Tab")
-        # Document-type filters must run on the form before submit (not on
-        # results). Skip them entirely when callers want every record.
-        if not self.all_records:
-            self._select_doc_types(page)
-        # Submit button is type="submit" inside the Property/Condo form (not always
-        # matched reliably by get_by_role strict name matching).
+        try:
+            page.locator("#documentType").select_option(
+                value=doc_option_value or "",
+                timeout=min(10_000, self.timeout_ms),
+            )
+        except Exception:
+            pass
         submit = page.locator(".search-form button[type='submit']").filter(
             has_text=re.compile(r"Search", re.I)
         )
         submit.click(timeout=self.timeout_ms)
         outcome = self._wait_for_results_ui(page)
-        if outcome == "empty":
+        if outcome == "empty" and log_empty:
             print(
                 "[official_records]   (no results returned by site)",
                 file=sys.stderr,
@@ -326,52 +417,16 @@ class OfficialRecordsScraper:
             )
 
     def _parse_results(self, page: Page, address: str) -> list[OfficialRecord]:
-        """Scrape all result items from the current page."""
-        records: list[OfficialRecord] = []
-
-        tabs = page.locator(".TitleSearchTab")
-        n = tabs.count()
-        seen: set[str] = set()
-
-        for i in range(n):
-            card = tabs.nth(i)
-            rec = _record_from_result_card(address, card)
-            if rec is None:
-                continue
-            if rec.clerks_file_number in seen:
-                continue
-            seen.add(rec.clerks_file_number)
-            if self.all_records or rec.is_high_value:
-                records.append(rec)
-
-        if n > 0:
-            return records
-
-        # Legacy fallback (older markup / unexpected DOM): best-effort text scrape
-        items = page.locator(
-            "xpath=//*[contains(text(),'File Number') or contains(text(),'File Number')]"
-            "/ancestor-or-self::*[self::a or self::li or self::tr or self::div][1]"
-        ).all()
-        if not items:
-            items = page.locator("text=Clerk").all()
-
-        for el in items:
-            try:
-                text = el.inner_text(timeout=5_000)
-            except Exception:
-                continue
-            if "File Number" not in text and "File Number" not in text:
-                continue
-            m = _FILE_NUM_RE.search(text)
-            key = m.group(1).strip() if m else text[:60]
-            if key in seen:
-                continue
-            seen.add(key)
-            rec = _extract_record(address, text)
-            if self.all_records or rec.is_high_value:
-                records.append(rec)
-
-        return records
+        """
+        Scrape the listing page once, then either return every row or only
+        wholesale-indicator rows (``is_high_value``).
+        """
+        all_rows = self._scrape_listing_rows_unfiltered(page, address)
+        self._last_listing_row_count = len(all_rows)
+        self._last_wholesale_row_count = sum(1 for r in all_rows if r.is_high_value)
+        if self.all_records:
+            return all_rows
+        return [r for r in all_rows if r.is_high_value]
 
     # ------------------------------------------------------------------
     # Public API
@@ -384,11 +439,16 @@ class OfficialRecordsScraper:
         *,
         search_index: int = 1,
     ) -> list[OfficialRecord]:
-        """Search a single address on an already-set-up page."""
-        self._do_search(page, address)
+        """
+        One broad Property/Condo search, then bulk scrape of listing cards only
+        (no opening individual instruments).
+        """
+        slug = _address_slug(address) or "address"
+        self._ensure_property_search_form(page)
+        self._run_one_property_search(page, address, None, log_empty=True)
+
         if self.results_html_dir is not None:
             self.results_html_dir.mkdir(parents=True, exist_ok=True)
-            slug = _address_slug(address) or "address"
             path = self.results_html_dir / (
                 f"official_records_{search_index:03d}_{slug}.html"
             )
@@ -398,7 +458,35 @@ class OfficialRecordsScraper:
                 file=sys.stderr,
                 flush=True,
             )
-        return self._parse_results(page, address)
+
+        records = self._parse_results(page, address)
+        for rec in records:
+            rec.search_index = search_index
+        n_list = self._last_listing_row_count
+        n_hv = self._last_wholesale_row_count
+
+        if self.all_records:
+            print(
+                f"[official_records]   → {n_list} listing row(s); "
+                f"{n_hv} wholesale-indicator; returning all rows.",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif not records:
+            print(
+                "[official_records]   → low-value lead: broad search returned "
+                f"{n_list} listing row(s); none match wholesale document types.",
+                file=sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"[official_records]   → {n_list} listing row(s); "
+                f"{n_hv} wholesale-indicator; returning {len(records)} row(s).",
+                file=sys.stderr,
+                flush=True,
+            )
+        return records
 
     def run(self, addresses: list[str]) -> list[OfficialRecord]:
         """
@@ -436,13 +524,6 @@ class OfficialRecordsScraper:
                     )
                     try:
                         records = self.search_one(page, address, search_index=i)
-                        hv = sum(1 for r in records if r.is_high_value)
-                        print(
-                            f"[official_records]   → {len(records)} record(s) found "
-                            + (f"({hv} high-value)" if not self.all_records else ""),
-                            file=sys.stderr,
-                            flush=True,
-                        )
                         all_records.extend(records)
                     except Exception as exc:
                         print(

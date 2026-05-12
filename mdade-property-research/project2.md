@@ -4,7 +4,7 @@
 
 Use the Miami-Dade Property Appraiser website to gather ownership, equity, and absentee owner information.
 
-[Miami-Dade Property Search](https://www.miamidadepa.gov/PropertySearch?utm_source=chatgpt.com)
+[Miami-Dade Property Search](https://www.miamidadepa.gov/pa/real-estate/property-search.page)
 
 ### Instructions
 
@@ -151,7 +151,7 @@ Example:
 Search
 ```
 6. 
-search ONLY these high-value wholesale lead indicators:
+search for only these high-value wholesale lead indicators in the search results:
 
 # High-Value Wholesale Lead Document Types (8/10+)
 
