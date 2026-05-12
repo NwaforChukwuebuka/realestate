@@ -149,9 +149,9 @@ def main(argv: list[str] | None = None) -> None:
                                  "distressed_ownership", "potential_wholesale"],
                         help="Filter export to one category")
 
-    # Input source (mutually exclusive)
+    # Input source
+    parser.add_argument("folio", nargs="*", help="Folio number(s)")
     src = parser.add_mutually_exclusive_group()
-    src.add_argument("folio", nargs="*", help="Folio number(s)")
     src.add_argument("--file", metavar="PATH", help="Text file, one folio per line")
     src.add_argument("--csv",  metavar="PATH", help="CSV file with a folio column")
     src.add_argument("--db",   action="store_true",
