@@ -54,7 +54,7 @@ _TRUST_LLC      = """(CASE WHEN
  THEN 1 ELSE 0 END)"""
 
 _UPSERT = f"""
-INSERT INTO property_prescores (
+INSERT OR REPLACE INTO property_prescores (
     parcel_id,
     pre_score,
     motivated_sellers,
@@ -122,16 +122,6 @@ SELECT
     '{datetime.utcnow().isoformat(timespec="seconds")}' AS scored_at
 
 FROM properties_normalized n
-ON CONFLICT(parcel_id) DO UPDATE SET
-    pre_score            = excluded.pre_score,
-    motivated_sellers    = excluded.motivated_sellers,
-    financial_distress   = excluded.financial_distress,
-    inherited_properties = excluded.inherited_properties,
-    legal_pressure       = excluded.legal_pressure,
-    distressed_ownership = excluded.distressed_ownership,
-    potential_wholesale  = excluded.potential_wholesale,
-    pre_categories       = excluded.pre_categories,
-    scored_at            = excluded.scored_at
 """
 
 

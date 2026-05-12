@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS research_results (
 """
 
 _UPSERT_RESULT = """
-INSERT INTO research_results (
+INSERT OR REPLACE INTO research_results (
     parcel_id, researched_at, rer_search_method,
     regulation_cases_count, strong_violations_count,
     official_records_count, high_value_doc_types,
@@ -49,18 +49,6 @@ INSERT INTO research_results (
     :triggered_signals, :categories, :lead_score,
     :is_wholesale_opportunity, :summary
 )
-ON CONFLICT(parcel_id) DO UPDATE SET
-    researched_at            = excluded.researched_at,
-    rer_search_method        = excluded.rer_search_method,
-    regulation_cases_count   = excluded.regulation_cases_count,
-    strong_violations_count  = excluded.strong_violations_count,
-    official_records_count   = excluded.official_records_count,
-    high_value_doc_types     = excluded.high_value_doc_types,
-    triggered_signals        = excluded.triggered_signals,
-    categories               = excluded.categories,
-    lead_score               = excluded.lead_score,
-    is_wholesale_opportunity = excluded.is_wholesale_opportunity,
-    summary                  = excluded.summary
 """
 
 
